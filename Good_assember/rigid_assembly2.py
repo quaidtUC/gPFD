@@ -15,7 +15,7 @@ n_filaments = 8
 filament_length = 6  # Shorter for better cube proportions
 n_connectors = 12
 spacing = 2.0
-box_size = 25.0
+box_size = 50.0       # larger box ⇒ lower initial overlap, prevents early expulsion
 
 
 def create_snapshot():
@@ -46,7 +46,7 @@ def create_snapshot():
 
         # Position filaments to avoid immediate overlap
         max_extent = (filament_length - 1) * spacing
-        safe_region = box_size / 2 - max_extent - 2.0
+        safe_region = box_size / 2 - max_extent - 5.0   # bigger buffer from walls
         start_pos = np.random.uniform(-safe_region, safe_region, size=3)
 
         for i in range(filament_length):
@@ -133,7 +133,7 @@ pair.params[('F', 'F')] = {'epsilon': 0.3, 'sigma': 1.0}
 
 # STRONG F_end-HubCore attraction for cube vertices
 pair.params[('F_end', 'HubCore')] = {'epsilon': 20.0, 'sigma': 1.3}  # Very strong
-pair.r_cut[('F_end', 'HubCore')] = 6.0  # Long range
+pair.r_cut[('F_end', 'HubCore')] = 3.0   # shorter; reduces huge initial forces
 
 # Prevent F_end-F_end binding (avoid filament-to-filament connections)
 pair.params[('F_end', 'F_end')] = {'epsilon': 0.5, 'sigma': 1.0}  # Weak repulsion
@@ -206,8 +206,8 @@ for frame in range(n_frames):
         fig = plt.figure(figsize=(14, 10))
         ax = fig.add_subplot(111, projection='3d')
 
-        colors = {'F': 'lightblue', 'C': 'red', 'F_end': 'gold'}
-        sizes = {'F': 80, 'C': 150, 'F_end': 200}
+        colors = {'F': 'lightblue', 'HubCore': 'red', 'F_end': 'gold'}
+        sizes = {'F': 80, 'HubCore': 150, 'F_end': 200}
 
         # Plot particles with enhanced 3D visibility
         for p, tid in zip(pos, typeid):
@@ -215,7 +215,7 @@ for frame in range(n_frames):
             if t == 'F_end':
                 ax.scatter(p[0], p[1], p[2], c=colors[t], s=sizes[t],
                            alpha=0.9, edgecolors='darkorange', linewidth=3, marker='*')
-            elif t == 'C':
+            elif t == 'HubCore':
                 ax.scatter(p[0], p[1], p[2], c=colors[t], s=sizes[t],
                            alpha=0.8, edgecolors='darkred', linewidth=2, marker='o')
             else:
@@ -232,8 +232,8 @@ for frame in range(n_frames):
                         'darkblue', alpha=0.9, linewidth=5)  # Thick lines for rigid filaments
 
         # Highlight F_end-C connections
-        f_end_positions = pos[typeid == 2]
-        c_positions = pos[typeid == 1]
+        f_end_positions = pos[typeid == 1]   # 'F_end'
+        c_positions = pos[typeid == 2]       # 'HubCore'
 
         rigid_connections = 0
         successful_bindings = 0
