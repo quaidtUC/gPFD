@@ -19,8 +19,8 @@ box_size = 50.0       # larger box ⇒ lower initial overlap, prevents early exp
 
 
 def create_snapshot():
-    particle_types = ['F', 'F_end', 'HubCore']
-    total_particles = n_filaments * filament_length + n_connectors
+    particle_types = ['F', 'F_end', 'HubCore', 'P'] #just added P
+    total_particles = n_filaments * filament_length + n_connectors * 4
 
     snapshot = hoomd.Snapshot()
     snapshot.particles.N = total_particles
@@ -28,6 +28,7 @@ def create_snapshot():
 
     positions = []
     typeid = []
+    body_tags = []            # keep track of rigid-body IDs
     bonds = []
     angles = []  # Store angle constraints for rigidity
 
@@ -58,6 +59,7 @@ def create_snapshot():
                 typeid.append(1)  # 'F_end' (index 1)
             else:
                 typeid.append(0)  # 'F' - regular filament body
+            body_tags.append(-1)  # filaments are not rigid bodies yet
 
             # Create bonds between consecutive particles
             if i > 0:
@@ -71,14 +73,25 @@ def create_snapshot():
 
     # Connectors - fewer, positioned strategically
     for _ in range(n_connectors):
-        # Place connectors in central region where cube assembly occurs
-        pos = np.random.normal(0, box_size / 6, size=3)  # Gaussian around center
-        positions.append(pos)
-        typeid.append(2)  # 'HubCore'
+        core = np.random.normal(0, box_size / 6, size=3)
+        core_index = particle_id
+        positions.append(core)
+        typeid.append(2)  # HubCore
+        body_tags.append(core_index)  # center gets its own index
         particle_id += 1
+
+        # three patch beads at 120°
+        for vec in [(0.5, 0, 0),
+                    (-0.25, 0.433, 0),
+                    (-0.25, -0.433, 0)]:
+            positions.append(core + np.array(vec))  # 0.5 σ arms
+            typeid.append(3)  # P
+            body_tags.append(core_index)  # constituent points to center
+            particle_id += 1
 
     positions = np.array(positions, dtype=np.float64)
     typeid = np.array(typeid, dtype=np.int32)
+    body_tags = np.array(body_tags, dtype=np.int32)
 
     # Ensure positions are within bounds
     epsilon = 1.0
@@ -88,6 +101,7 @@ def create_snapshot():
     # Set particle data
     snapshot.particles.position[:] = positions
     snapshot.particles.typeid[:] = typeid
+    snapshot.particles.body[:] = body_tags
     snapshot.particles.mass[:] = np.ones(total_particles, dtype=np.float64)
     snapshot.particles.charge[:] = np.zeros(total_particles, dtype=np.float64)
     snapshot.particles.velocity[:] = np.random.normal(0, 0.2, (total_particles, 3))
@@ -114,7 +128,16 @@ def create_snapshot():
 # Initialize system
 snapshot = create_snapshot()
 sim.create_state_from_snapshot(snapshot)
-
+rigid = hoomd.md.constrain.Rigid()
+rigid.body['HubCore'] = {
+    'constituent_types': ['P', 'P', 'P'],
+    'positions':        [(0.5, 0, 0),
+                         (-0.25, 0.433, 0),
+                         (-0.25, -0.433, 0)],
+    'orientations':     [(1, 0, 0, 0),
+                         (1, 0, 0, 0),
+                         (1, 0, 0, 0)]     # one quaternion per patch bead
+}
 # VERY STRONG bond interactions (keep filaments connected)
 harmonic = hoomd.md.bond.Harmonic()
 harmonic.params['filament_bond'] = {'k': 5000.0, 'r0': spacing}  # Very stiff
@@ -128,16 +151,18 @@ angle_harmonic.params['rigidity_angle'] = {'k': 2000.0, 't0': np.pi}  # 180° = 
 nl = hoomd.md.nlist.Cell(buffer=0.6)
 pair = hoomd.md.pair.LJ(nlist=nl)
 
+
 # Filament body interactions (mild repulsion)
 pair.params[('F', 'F')] = {'epsilon': 0.3, 'sigma': 1.0}
 
-# STRONG F_end-HubCore attraction for cube vertices
-pair.params[('F_end', 'HubCore')] = {'epsilon': 20.0, 'sigma': 1.3}  # Very strong
-pair.r_cut[('F_end', 'HubCore')] = 3.0   # shorter; reduces huge initial forces
 
 # Prevent F_end-F_end binding (avoid filament-to-filament connections)
 pair.params[('F_end', 'F_end')] = {'epsilon': 0.5, 'sigma': 1.0}  # Weak repulsion
 pair.r_cut[('F_end', 'F_end')] = 2.5
+
+# Mild repulsion so hubs don’t pile on one end when patches are full
+pair.params[('F_end', 'HubCore')] = {'epsilon': 0.1, 'sigma': 1.0}
+pair.r_cut[('F_end', 'HubCore')]  = 2.5
 
 # Regular F-HubCore interaction (moderate)
 pair.params[('F', 'HubCore')] = {'epsilon': 2.0, 'sigma': 1.0}
@@ -156,8 +181,32 @@ pair.r_cut[('F', 'F')] = 2.5
 pair.r_cut[('F', 'F_end')] = 2.5
 pair.r_cut[('F_end', 'F')] = 2.5
 
+# NOTE: HOOMD’s LJ TypeParameter demands *every* unique pair have
+#       epsilon, sigma, and r_cut defined. Adding ‘P’ introduced
+#       new combinations like ('F_end','P'); leaving them blank
+#       triggers the “value is required” error we just saw.
+
+# ---- New: give P a weak excluded‑volume repulsion with everyone ----
+def set_LJ(a, b, eps=0.1, sig=1.0, rcut=2.5):
+    pair.params[(a, b)] = dict(epsilon=eps, sigma=sig)
+    pair.r_cut[(a, b)]  = rcut
+for other in ['F', 'F_end', 'HubCore', 'P']:
+    set_LJ('P', other)
+    set_LJ(other, 'P')
+
+# --- Directional binding: one filament end per patch bead ---
+patch = hoomd.md.pair.aniso.Patchy(nlist=nl)
+patch.params[('P', 'F_end')] = dict(
+    epsilon=5.0,
+    sigma=0.6,
+    alpha=0.35,   # ~20° half‑cone
+    omega=30.0)
+patch.r_cut[('P', 'F_end')] = 1.5
+integrator.forces.append(patch)
+
 # Stable integrator for rigid system
 integrator = hoomd.md.Integrator(dt=0.001)  # Small timestep for stability
+integrator.rigid = rigid
 integrator.forces.append(pair)
 integrator.forces.append(harmonic)
 integrator.forces.append(angle_harmonic)  # ADD RIGIDITY
@@ -165,9 +214,11 @@ integrator.forces.append(angle_harmonic)  # ADD RIGIDITY
 # Lower temperature to prevent excessive motion
 integrator.methods.append(
     hoomd.md.methods.Langevin(
-        filter=hoomd.filter.All(),
-        kT=0.8,  # Low temperature for stable rigid assembly
-        default_gamma=5.0  # High damping for control
+        # Integrate only non‑constituent particles:
+        #   F, F_end (filament beads) and HubCore (rigid centers)
+        filter=hoomd.filter.Type(['F', 'F_end', 'HubCore']),
+        kT=0.8,          # Low temperature for stable rigid assembly
+        default_gamma=5.0
     )
 )
 
@@ -212,6 +263,8 @@ for frame in range(n_frames):
         # Plot particles with enhanced 3D visibility
         for p, tid in zip(pos, typeid):
             t = types[tid]
+            if t == 'P':  # skip patch beads – they’re just binding sites
+                continue
             if t == 'F_end':
                 ax.scatter(p[0], p[1], p[2], c=colors[t], s=sizes[t],
                            alpha=0.9, edgecolors='darkorange', linewidth=3, marker='*')
