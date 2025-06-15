@@ -194,15 +194,21 @@ for other in ['F', 'F_end', 'HubCore', 'P']:
     set_LJ('P', other)
     set_LJ(other, 'P')
 
-# --- Directional binding: one filament end per patch bead ---
-patch = hoomd.md.pair.aniso.Patchy(nlist=nl)
-patch.params[('P', 'F_end')] = dict(
-    epsilon=5.0,
-    sigma=0.6,
-    alpha=0.35,   # ~20° half‑cone
-    omega=30.0)
-patch.r_cut[('P', 'F_end')] = 1.5
-integrator.forces.append(patch)
+# --- Directional binding via Patchy DISABLED: kernel not available in this build ---
+# patch = hoomd.md.pair.aniso.Patchy(nlist=nl)
+# patch.params[('P', 'F_end')] = dict(
+#     epsilon=5.0,
+#     sigma=0.6,
+#     alpha=0.35,   # ~20° half‑cone
+#     omega=30.0)
+# patch.r_cut[('P', 'F_end')] = 1.5
+# integrator.forces.append(patch)
+
+# Directional-ish binding via tiny LJ well (P–F_end only)
+pair.params[('P', 'F_end')] = {'epsilon': 5.0, 'sigma': 0.6}
+pair.params[('F_end', 'P')] = {'epsilon': 5.0, 'sigma': 0.6}
+pair.r_cut[('P', 'F_end')]  = 1.5
+pair.r_cut[('F_end', 'P')]  = 1.5
 
 # Stable integrator for rigid system
 integrator = hoomd.md.Integrator(dt=0.001)  # Small timestep for stability
@@ -350,6 +356,9 @@ for frame in range(n_frames):
     except RuntimeError as e:
         print(f"Simulation failed at frame {frame}: {e}")
         break
+
+# Remove any dangling Patchy force append (safety)
+# integrator.forces.append(patch)
 
 # Create outputs
 if filenames:
