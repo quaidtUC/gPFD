@@ -236,11 +236,10 @@ integrator.forces.append(angle_harmonic)  # ADD RIGIDITY
 # Lower temperature to prevent excessive motion
 integrator.methods.append(
     hoomd.md.methods.Langevin(
-        # Integrate only non‑constituent particles:
-        #   F, F_end (filament beads) and HubCore (rigid centers)
         filter=hoomd.filter.Type(['F', 'F_end', 'HubCore']),
-        kT=0.8,          # Low temperature for stable rigid assembly
-        default_gamma=5.0
+        kT=0.8,
+        default_gamma=0.2,            # ← 25× lower translational drag
+        default_gamma_r=(0.2, 0.2, 0.2)  # ← allow tumbling
     )
 )
 
