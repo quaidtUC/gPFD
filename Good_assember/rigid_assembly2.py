@@ -6,6 +6,23 @@ from mpl_toolkits.mplot3d import Axes3D
 import imageio.v2 as imageio  # Fix deprecation warning
 import os
 
+# -----------------------------
+#  Physical-units mapping (SI)
+# -----------------------------
+units = {
+    'sigma_nm' : 2.0,          # 1 σ  = 2 nm  (filament diameter)
+    'epsilon_kJ': 4.1,         # 1 ε ≈ kB·300 K  (choose a convenient value)
+    'mass_ku'  : 100.0         # 1 m = 100 kDa  (rough filament bead)
+}
+kB_kJ_per_K = 0.0083145        # Boltzmann constant in kJ mol⁻¹ K⁻¹
+T_sim = 0.8                    # kT = 0.8 ε  ->  T ≈ 0.8 ε / kB
+
+# --- Derived physical time scale ---------------------------------
+# τ_LJ [ps] = σ * sqrt(m/ε)  (all in SI) converted to picoseconds
+tau_LJ_ps = (units['sigma_nm'] * 1e-9) * np.sqrt(
+                units['mass_ku'] * 1.66054e-27 /      # kg
+                (units['epsilon_kJ'] * 1000)) * 1e12   # 1e12 converts s→ps
+
 # -------------------------------------------------
 # Helper to set filament stiffness (angle spring k)
 # -------------------------------------------------
@@ -141,12 +158,12 @@ sim.create_state_from_snapshot(snapshot)
 rigid = hoomd.md.constrain.Rigid()
 rigid.body['HubCore'] = {
     'constituent_types': ['P', 'P', 'P'],
-    'positions':        [(0.5, 0, 0),
-                         (-0.25, 0.433, 0),
-                         (-0.25, -0.433, 0)],
+    'positions':        [(0.8, 0.0, 0.0),
+                         (-0.4,  0.693, 0.0),
+                         (-0.4, -0.693, 0.0)],
     'orientations':     [(1, 0, 0, 0),
                          (1, 0, 0, 0),
-                         (1, 0, 0, 0)]     # one quaternion per patch bead
+                         (1, 0, 0, 0)]
 }
 # VERY STRONG bond interactions (keep filaments connected)
 harmonic = hoomd.md.bond.Harmonic()
@@ -170,17 +187,17 @@ pair.params[('F', 'F')] = {'epsilon': 0.3, 'sigma': 1.0}
 pair.params[('F_end', 'F_end')] = {'epsilon': 0.5, 'sigma': 1.0}  # Weak repulsion
 pair.r_cut[('F_end', 'F_end')] = 2.5
 
-# Mild repulsion so hubs don’t pile on one end when patches are full
-pair.params[('F_end', 'HubCore')] = {'epsilon': 0.1, 'sigma': 1.0}
-pair.r_cut[('F_end', 'HubCore')]  = 2.5
+# Gentle, short-range core bump – allows F_end to reach patch bead
+pair.params[('F_end', 'HubCore')] = {'epsilon': 0.01, 'sigma': 0.8}
+pair.r_cut[('F_end', 'HubCore')]  = 0.8 * 2**(1/6)   # ≈ 0.90 σ
 
 # Regular F-HubCore interaction (moderate)
 pair.params[('F', 'HubCore')] = {'epsilon': 2.0, 'sigma': 1.0}
 pair.r_cut[('F', 'HubCore')] = 3.0
 
-# HubCore-HubCore strong repulsion (prevent clustering)
-pair.params[('HubCore', 'HubCore')] = {'epsilon': 5.0, 'sigma': 2.0}  # Strong repulsion
-pair.r_cut[('HubCore', 'HubCore')] = 4.0
+# Purely repulsive WCA for hub–hub interactions (σ = 3.0)
+pair.params[('HubCore', 'HubCore')] = {'epsilon': 5.0, 'sigma': 3.0}
+pair.r_cut[('HubCore', 'HubCore')]  = 3.0 * 2**(1/6)   # ≈ 3.36 nm
 
 # F_end-F interactions
 pair.params[('F', 'F_end')] = {'epsilon': 0.3, 'sigma': 1.0}
@@ -204,6 +221,10 @@ for other in ['F', 'F_end', 'HubCore', 'P']:
     set_LJ('P', other)
     set_LJ(other, 'P')
 
+# Purely repulsive WCA for patch–patch; still blocks two hubs but allows one patch bead to bind
+pair.params[('P', 'P')] = {'epsilon': 2.0, 'sigma': 1.1}
+pair.r_cut[('P', 'P')]  = 1.1 * 2**(1/6)   # ≈ 1.23 σ
+
 # --- Directional binding via Patchy DISABLED: kernel not available in this build ---
 # patch = hoomd.md.pair.aniso.Patchy(nlist=nl)
 # patch.params[('P', 'F_end')] = dict(
@@ -214,9 +235,9 @@ for other in ['F', 'F_end', 'HubCore', 'P']:
 # patch.r_cut[('P', 'F_end')] = 1.5
 # integrator.forces.append(patch)
 
-# Directional-ish binding via tiny LJ well (P–F_end only)
-pair.params[('P', 'F_end')] = {'epsilon': 5.0, 'sigma': 0.6}
-pair.params[('F_end', 'P')] = {'epsilon': 5.0, 'sigma': 0.6}
+ # Stronger, slightly wider well to keep F_end bound
+pair.params[('P', 'F_end')] = {'epsilon': 8.0, 'sigma': 0.7}
+pair.params[('F_end', 'P')] = {'epsilon': 8.0, 'sigma': 0.7}
 pair.r_cut[('P', 'F_end')]  = 1.5
 pair.r_cut[('F_end', 'P')]  = 1.5
 
@@ -249,12 +270,18 @@ sim.operations.integrator = integrator
 frame_folder = 'frames_rigid_3d'
 os.makedirs(frame_folder, exist_ok=True)
 
-n_frames = 300
-steps_per_frame = 300  # More steps per frame for convergence
+n_frames = 600
+steps_per_frame = 600  # More steps per frame for convergence
 burn_in_steps   = 50_000  # equilibrate with binding OFF
 filenames = []
 
 set_filament_stiffness(20_000)     # rigid-limit baseline
+
+print(f"Units: σ = {units['sigma_nm']} nm, ε = {units['epsilon_kJ']} kJ/mol, "
+      f"m = {units['mass_ku']} kDa")
+print(f"Integrator dt = {integrator.dt * tau_LJ_ps:.3f} ps "
+      f"(1 MD step); burn-in = {burn_in_steps * integrator.dt * tau_LJ_ps / 1000:.2f} ns")
+
 print("Starting RIGID FILAMENT 3D simulation...")
 print("=" * 60)
 print("RIGIDITY FEATURES:")
