@@ -210,6 +210,12 @@ pair.params[('F_end', 'P')] = {'epsilon': 5.0, 'sigma': 0.6}
 pair.r_cut[('P', 'F_end')]  = 1.5
 pair.r_cut[('F_end', 'P')]  = 1.5
 
+# --- Burn-in prep: zero ε, save to a normal variable ---
+epsilon_bind = pair.params[('P', 'F_end')]['epsilon']  # store once
+pair.params[('P', 'F_end')]['epsilon'] = 0.0
+pair.params[('F_end', 'P')]['epsilon'] = 0.0
+
+
 # Stable integrator for rigid system
 integrator = hoomd.md.Integrator(dt=0.001)  # Small timestep for stability
 integrator.rigid = rigid
@@ -236,6 +242,7 @@ os.makedirs(frame_folder, exist_ok=True)
 
 n_frames = 300
 steps_per_frame = 300  # More steps per frame for convergence
+burn_in_steps   = 50_000  # equilibrate with binding OFF
 filenames = []
 
 print("Starting RIGID FILAMENT 3D simulation...")
@@ -250,6 +257,17 @@ print("=" * 60)
 
 # Camera rotation for 3D viewing
 angles = np.linspace(0, 720, n_frames)  # Two full rotations
+
+# --------------------------------------------------
+# Burn-in: equilibrate with binding OFF
+# --------------------------------------------------
+print(f"Equilibrating {burn_in_steps} steps (binding OFF)…")
+sim.run(burn_in_steps)
+
+# Restore binding ε
+pair.params[('P', 'F_end')]['epsilon'] = epsilon_bind
+pair.params[('F_end', 'P')]['epsilon'] = epsilon_bind
+print("Burn-in complete. Binding ON. Starting production…\n")
 
 for frame in range(n_frames):
     try:
