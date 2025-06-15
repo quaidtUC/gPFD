@@ -6,6 +6,16 @@ from mpl_toolkits.mplot3d import Axes3D
 import imageio.v2 as imageio  # Fix deprecation warning
 import os
 
+# -------------------------------------------------
+# Helper to set filament stiffness (angle spring k)
+# -------------------------------------------------
+def set_filament_stiffness(k_theta):
+    """Increase or decrease filament rigidity.
+    k_theta = 20_000  → almost perfectly rigid
+    k_theta =  2_400  → semi-rigid (ℓ_p ≈ filament length)
+    """
+    angle_harmonic.params['rigidity_angle']['k'] = k_theta
+
 # Device
 device = hoomd.device.auto_select()
 sim = hoomd.Simulation(device=device, seed=42)
@@ -245,6 +255,7 @@ steps_per_frame = 300  # More steps per frame for convergence
 burn_in_steps   = 50_000  # equilibrate with binding OFF
 filenames = []
 
+set_filament_stiffness(20_000)     # rigid-limit baseline
 print("Starting RIGID FILAMENT 3D simulation...")
 print("=" * 60)
 print("RIGIDITY FEATURES:")
